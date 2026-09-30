@@ -2,16 +2,18 @@
   "name": "machine-service",
   "version": "1.0.0",
   "description": "",
-  "main": "script.js",
+  "main": "server.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.js"
+    "start": "node server.js",
+    "setup-db": "node --env-file=.env scripts/setup-db.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "pg": "^8.23.0",
     "web-push": "^3.6.7"
   }
 }

@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "crons": [
+    {
+      "path": "/api/cron/check-reminders",
+      "schedule": "*/30 * * * *"
+    }
+  ],
+  "rewrites": [
+    { "source": "/api/login", "destination": "/api/login" },
+    { "source": "/api/logout", "destination": "/api/logout" },
+    { "source": "/api/database", "destination": "/api/database" },
+    { "source": "/vapidPublicKey", "destination": "/api/vapidPublicKey" },
+    { "source": "/subscribe", "destination": "/api/subscribe" },
+    { "source": "/servicedLog", "destination": "/api/servicedLog" },
+    { "source": "/markServiced", "destination": "/api/markServiced" },
+    { "source": "/unmarkServiced", "destination": "/api/unmarkServiced" },
+    { "source": "/sw-markServiced", "destination": "/api/sw-markServiced" },
+    { "source": "/database.json", "destination": "/api/database" }
+  ]
+}

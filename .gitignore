@@ -1,3 +1,15 @@
 node_modules
 package-lock.json
 dist
+
+# Local data files — stored in PostgreSQL on Vercel
+database.json
+users.json
+vapidKeys.json
+subscriptions.json
+notifyLog.json
+servicedLog.json
+
+# Environment variables
+.env
+.env.local
