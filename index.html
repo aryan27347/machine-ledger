@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Machine Service Ledger</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css" />
+    <link rel="manifest" href="manifest.json" />
+  </head>
+  <body>
+    <div class="wrap">
+      <header class="top">
+        <div>
+          <p class="eyebrow">Installation &amp; maintenance log</p>
+          <h1>Machine Service Ledger</h1>
+        </div>
+        <div class="top-meta">
+          <div>Today is <span id="todayLabel">-</span></div>
+          <button
+            class="ghost"
+            id="btnLogout"
+            type="button"
+            style="margin-top: 8px; padding: 4px 8px; font-size: 0.9em"
+          >
+            Logout
+          </button>
+        </div>
+      </header>
+
+      <section class="stats">
+        <div class="stat">
+          <div class="num" id="statTotal">0</div>
+          <div class="lbl">Machines logged</div>
+        </div>
+        <div class="stat warn">
+          <div class="num" id="statDueToday">0</div>
+          <div class="lbl">Due today</div>
+          <div class="led" id="ledDueToday"></div>
+        </div>
+        <div class="stat">
+          <div class="num" id="statDueWeek">0</div>
+          <div class="lbl">Due within 7 days</div>
+        </div>
+        <div class="stat">
+          <div class="num" id="notifState">Off</div>
+          <div class="lbl">Admin notifications</div>
+          <div class="led" id="ledNotif"></div>
+          <button class="notif-btn" id="btnEnableNotif" type="button">
+            Enable
+          </button>
+        </div>
+      </section>
+
+      <div class="update-banner" id="updateBanner">
+        <span>A new version of the app is available.</span>
+        <button class="primary small" id="btnUpdateApp" type="button">
+          Refresh
+        </button>
+      </div>
+      <div class="due-banner" id="dueBanner"></div>
+
+      <div class="toolbar">
+        <div class="group">
+          <button class="primary" id="btnAddNew" type="button">
+            + Add machine
+          </button>
+          <button class="ghost" id="btnRefreshApp" type="button">
+            Refresh Page
+          </button>
+          <!-- <button class="ghost" id="btnCheckNow" type="button">
+            Check reminders now
+          </button> -->
+        </div>
+        <div class="group">
+          <!-- <button class="ghost" id="btnExport" type="button">
+            Export JSON
+          </button>
+          <button class="ghost" id="btnImport" type="button">
+            Import JSON
+          </button>
+          <input type="file" id="fileImport" accept="application/json" />
+          <button class="danger-outline" id="btnClear" type="button">
+            Clear all
+          </button> -->
+        </div>
+      </div>
+
+      <section class="panel" id="formPanel">
+        <h2 id="formTitle">Add machine</h2>
+        <form id="recordForm">
+          <input type="hidden" id="recordId" />
+          <div class="form-grid">
+            <div class="field">
+              <label for="machineCode">Machine code</label>
+              <input
+                type="text"
+                id="machineCode"
+                placeholder="MC-1024"
+                required
+              />
+            </div>
+            <div class="field">
+              <label for="model">Model</label>
+              <input
+                type="text"
+                id="model"
+                placeholder="AquaPure X200"
+                required
+              />
+            </div>
+            <div class="field">
+              <label for="clientName">Client name</label>
+              <input
+                type="text"
+                id="clientName"
+                placeholder="Rajasthan Dairy Co."
+                required
+              />
+            </div>
+            <div class="field">
+              <label for="location">Location of machine</label>
+              <input
+                type="text"
+                id="location"
+                placeholder="Plant floor, Unit 3"
+                required
+              />
+            </div>
+            <div class="field">
+              <label for="city">City</label>
+              <input type="text" id="city" placeholder="Bikaner" required />
+            </div>
+            <div class="field">
+              <label for="installDate">Installation date</label>
+              <input type="date" id="installDate" required />
+            </div>
+            <div class="field">
+              <label for="package">Package</label>
+              <select id="package" required>
+                <option value="monthly">Monthly</option>
+                <option value="quarterly">Quarterly</option>
+                <option value="halfyearly">Half yearly</option>
+                <option value="yearly">Yearly</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="ghost" id="btnCancelForm">
+              Cancel
+            </button>
+            <button type="submit" class="primary" id="btnSaveRecord">
+              Save machine
+            </button>
+          </div>
+        </form>
+      </section>
+
+      <section class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>S.No</th>
+              <th>Machine code</th>
+              <th>Model</th>
+              <th>Client</th>
+              <th>Location</th>
+              <th>City</th>
+              <th>Installed</th>
+              <th>Package</th>
+              <th>Next service</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="tableBody"></tbody>
+        </table>
+        <div class="empty-state" id="emptyState" style="display: none">
+          <div class="big">No machines logged yet</div>
+          <div>
+            Add a machine to start tracking installation and service reminders.
+          </div>
+        </div>
+      </section>
+
+      <footer class="note">
+        <span align="center">
+          This website is designed and developer with &hearts; by &lt;&sol;<a
+            href="https://dageco.in"
+            target="_blank"
+            >DageCO</a
+          >&gt;
+        </span>
+      </footer>
+    </div>
+
+    <script src="script.js"></script>
+  </body>
+</html>

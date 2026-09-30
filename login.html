@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Login - Machine Service Ledger</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css" />
+    <link rel="manifest" href="manifest.json" />
+    <style>
+      .login-wrap {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        padding: 24px;
+      }
+      .login-panel {
+        max-width: 400px;
+        width: 100%;
+        display: block;
+      }
+      .error-msg {
+        color: var(--danger);
+        background: var(--danger-dim);
+        padding: 8px 12px;
+        border-radius: 4px;
+        margin-bottom: 16px;
+        display: none;
+        font-weight: 500;
+        text-align: center;
+      }
+      .login-actions {
+        display: flex;
+        justify-content: flex-end;
+        margin-top: 24px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="login-wrap">
+      <header
+        class="top"
+        style="
+          text-align: center;
+          margin-bottom: 32px;
+          border-bottom: none;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+        "
+      >
+        <p class="eyebrow">Admin Access</p>
+        <h1 style="text-transform: uppercase">Machine Service Ledger</h1>
+      </header>
+
+      <section class="panel login-panel">
+        <h2>Login</h2>
+        <div id="errorMsg" class="error-msg"></div>
+        <form id="loginForm">
+          <div class="form-grid" style="grid-template-columns: 1fr">
+            <div class="field">
+              <label for="username">Username</label>
+              <input
+                type="text"
+                id="username"
+                placeholder="Enter your username"
+                required
+              />
+            </div>
+            <div class="field">
+              <label for="password">Password</label>
+              <input
+                type="password"
+                id="password"
+                placeholder="Enter your password"
+                required
+              />
+            </div>
+          </div>
+          <div class="login-actions">
+            <button type="submit" class="primary" id="btnLogin">Log in</button>
+          </div>
+        </form>
+      </section>
+
+      <footer class="note" style="margin-top: 48px">
+        <span align="center">
+          This website is designed and developer with &hearts; by &lt;&sol;<a
+            href="https://dageco.in"
+            >DageCO</a
+          >&gt;
+        </span>
+      </footer>
+    </div>
+
+    <script>
+      const loginForm = document.getElementById("loginForm");
+      const errorMsg = document.getElementById("errorMsg");
+
+      loginForm.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        errorMsg.style.display = "none";
+        const username = document.getElementById("username").value;
+        const password = document.getElementById("password").value;
+
+        try {
+          const res = await fetch("/api/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ username, password }),
+          });
+          const data = await res.json();
+          if (data.success) {
+            window.location.href = "/";
+          } else {
+            errorMsg.textContent = data.error || "Login failed";
+            errorMsg.style.display = "block";
+          }
+        } catch (err) {
+          console.error(err);
+          errorMsg.textContent = "Network error. Try again.";
+          errorMsg.style.display = "block";
+        }
+      });
+    </script>
+  </body>
+</html>

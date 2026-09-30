@@ -1,0 +1,15 @@
+{
+  "name": "Machine Service Ledger",
+  "short_name": "Machine Ledger",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0B1D33",
+  "theme_color": "#F2A93B",
+  "icons": [
+    {
+      "src": "./favicon.png",
+      "sizes": "64x64 32x32 24x24 16x16",
+      "type": "image/x-icon"
+    }
+  ]
+}
