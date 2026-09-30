@@ -4,7 +4,7 @@ const path = require("path");
 const webpush = require("web-push");
 const crypto = require("crypto");
 
-const PORT = 3001;
+const PORT = process.env.PORT || 3001;
 const REMINDER_TIME = 1000; // time is in milliseconds, 1s = 1000ms;
 
 // Load users
