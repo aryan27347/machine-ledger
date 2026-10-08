@@ -246,6 +246,9 @@ async function checkAndNotify() {
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
+// Trust the reverse proxy (Render) so secure cookies can be set
+app.set("trust proxy", 1);
+
 app.use(
   session({
     store: new pgSession({
