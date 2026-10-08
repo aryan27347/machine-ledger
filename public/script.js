@@ -596,14 +596,13 @@
         if (sub) {
           await sub.unsubscribe();
         }
-        await r.unregister();
       }
 
       const reg = await navigator.serviceWorker.register("./sw.js");
       await navigator.serviceWorker.ready;
 
       const response = await fetch("./vapidPublicKey");
-      const vapidPublicKey = await response.text();
+      const vapidPublicKey = (await response.text()).trim();
       const convertedVapidKey = urlBase64ToUint8Array(vapidPublicKey);
 
       const subscription = await reg.pushManager.subscribe({
