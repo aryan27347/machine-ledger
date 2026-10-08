@@ -246,26 +246,24 @@ async function checkAndNotify() {
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-function setupSession() {
-  app.use(
-    session({
-      store: new pgSession({
-        pool,
-        tableName: "session",
-        createTableIfMissing: false,
-      }),
-      secret:
-        process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex"),
-      resave: false,
-      saveUninitialized: false,
-      cookie: {
-        httpOnly: true,
-        maxAge: 24 * 60 * 60 * 1000, // 24 h
-        secure: process.env.NODE_ENV === "production",
-      },
+app.use(
+  session({
+    store: new pgSession({
+      pool,
+      tableName: "session",
+      createTableIfMissing: false,
     }),
-  );
-}
+    secret:
+      process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex"),
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      maxAge: 24 * 60 * 60 * 1000, // 24 h
+      secure: process.env.NODE_ENV === "production",
+    },
+  }),
+);
 
 function requireAuth(req, res, next) {
   if (req.session?.user) return next();
@@ -493,7 +491,6 @@ async function start() {
   try {
     await initDB();
     await initVapid();
-    setupSession();
     // Fire immediately on startup, then every 30 minutes
     checkAndNotify();
     setInterval(checkAndNotify, REMINDER_INTERVAL_MS);

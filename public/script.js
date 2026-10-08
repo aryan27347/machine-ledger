@@ -588,8 +588,20 @@
     }
 
     try {
+      // Forcibly clear ALL old service workers and subscriptions 
+      // to resolve any deep browser state issues with old VAPID keys
+      const registrations = await navigator.serviceWorker.getRegistrations();
+      for (const r of registrations) {
+        const sub = await r.pushManager.getSubscription();
+        if (sub) {
+          await sub.unsubscribe();
+        }
+        await r.unregister();
+      }
+
       const reg = await navigator.serviceWorker.register("./sw.js");
       await navigator.serviceWorker.ready;
+
       const response = await fetch("./vapidPublicKey");
       const vapidPublicKey = await response.text();
       const convertedVapidKey = urlBase64ToUint8Array(vapidPublicKey);
