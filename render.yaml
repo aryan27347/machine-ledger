@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: machine-ledger
+    runtime: node
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false          # Set manually in Render dashboard
+      - key: SESSION_SECRET
+        generateValue: true  # Render auto-generates a secure random string

@@ -1,17 +1,25 @@
 {
-  "name": "machine-service",
-  "version": "1.0.0",
-  "description": "",
-  "main": "script.js",
+  "name": "machine-ledger",
+  "version": "2.0.0",
+  "description": "Machine Service Ledger — Express + PostgreSQL",
+  "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "node server.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
+    "connect-pg-simple": "^9.0.1",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "express-session": "^1.18.0",
+    "pg": "^8.12.0",
     "web-push": "^3.6.7"
   }
 }

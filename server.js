@@ -1,108 +1,145 @@
-const http = require("http");
-const fs = require("fs");
-const path = require("path");
+require("dotenv").config();
+
+const express = require("express");
+const session = require("express-session");
+const pgSession = require("connect-pg-simple")(session);
+const { Pool } = require("pg");
 const webpush = require("web-push");
 const crypto = require("crypto");
+const path = require("path");
 
+const app = express();
 const PORT = process.env.PORT || 3001;
-const REMINDER_TIME = 1000; // time is in milliseconds, 1s = 1000ms;
+const PUBLIC_DIR = path.join(__dirname, "public");
 
-// Load users
-const usersPath = path.join(__dirname, "users.json");
-let users = [];
-if (fs.existsSync(usersPath)) {
-  users = JSON.parse(fs.readFileSync(usersPath, "utf-8"));
+// ─── DB Pool ──────────────────────────────────────────────────────────────────
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+});
+
+// ─── DB Init ──────────────────────────────────────────────────────────────────
+async function initDB() {
+  // Users
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id       SERIAL PRIMARY KEY,
+      username TEXT UNIQUE NOT NULL,
+      password TEXT NOT NULL
+    )
+  `);
+  const { rowCount } = await pool.query("SELECT 1 FROM users LIMIT 1");
+  if (rowCount === 0) {
+    await pool.query(
+      "INSERT INTO users (username, password) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+      ["admin", "admin"],
+    );
+  }
+
+  // Session store (connect-pg-simple requires this table)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS session (
+      sid    VARCHAR NOT NULL COLLATE "default",
+      sess   JSON    NOT NULL,
+      expire TIMESTAMP(6) NOT NULL,
+      CONSTRAINT session_pkey PRIMARY KEY (sid)
+    )
+  `);
+  await pool.query(
+    `CREATE INDEX IF NOT EXISTS IDX_session_expire ON session (expire)`,
+  );
+
+  // Machines
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS machines (
+      id           TEXT PRIMARY KEY,
+      sno          INTEGER NOT NULL,
+      machine_code TEXT NOT NULL,
+      model        TEXT NOT NULL,
+      client_name  TEXT NOT NULL,
+      location     TEXT NOT NULL,
+      city         TEXT NOT NULL,
+      install_date TEXT NOT NULL,
+      package      TEXT NOT NULL
+    )
+  `);
+
+  // Push subscriptions
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS subscriptions (
+      id       SERIAL PRIMARY KEY,
+      endpoint TEXT UNIQUE NOT NULL,
+      data     JSONB NOT NULL
+    )
+  `);
+
+  // Serviced log — tracks which machines are marked serviced today
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS serviced_log (
+      machine_id   TEXT PRIMARY KEY,
+      serviced_date TEXT NOT NULL
+    )
+  `);
+
+  // VAPID keys (stored in DB so they survive deploys)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS vapid_keys (
+      id          INTEGER PRIMARY KEY DEFAULT 1,
+      public_key  TEXT NOT NULL,
+      private_key TEXT NOT NULL
+    )
+  `);
+
+  console.log("DB tables ready.");
 }
 
-// Session store
-const sessions = {};
+// ─── VAPID ────────────────────────────────────────────────────────────────────
+let vapidPublicKey, vapidPrivateKey;
 
-// Setup VAPID keys
-const vapidKeysPath = path.join(__dirname, "vapidKeys.json");
-let vapidKeys;
-if (fs.existsSync(vapidKeysPath)) {
-  vapidKeys = JSON.parse(fs.readFileSync(vapidKeysPath, "utf-8"));
-} else {
-  vapidKeys = webpush.generateVAPIDKeys();
-  fs.writeFileSync(vapidKeysPath, JSON.stringify(vapidKeys, null, 2));
+async function initVapid() {
+  const { rows } = await pool.query("SELECT * FROM vapid_keys WHERE id = 1");
+  if (rows.length === 0) {
+    const keys = webpush.generateVAPIDKeys();
+    await pool.query(
+      "INSERT INTO vapid_keys (id, public_key, private_key) VALUES (1, $1, $2)",
+      [keys.publicKey, keys.privateKey],
+    );
+    vapidPublicKey = keys.publicKey;
+    vapidPrivateKey = keys.privateKey;
+  } else {
+    vapidPublicKey = rows[0].public_key;
+    vapidPrivateKey = rows[0].private_key;
+  }
+  webpush.setVapidDetails(
+    "mailto:perryjangid@gmail.com",
+    vapidPublicKey,
+    vapidPrivateKey,
+  );
+  console.log("VAPID keys ready.");
 }
 
-webpush.setVapidDetails(
-  "mailto:perryjangid@gmail.com",
-  vapidKeys.publicKey,
-  vapidKeys.privateKey,
-);
-
-// Storage for subscriptions
-const subscriptionsPath = path.join(__dirname, "subscriptions.json");
-let subscriptions = [];
-if (fs.existsSync(subscriptionsPath)) {
-  subscriptions = JSON.parse(fs.readFileSync(subscriptionsPath, "utf-8"));
-}
-
-function saveSubscriptions() {
-  fs.writeFileSync(subscriptionsPath, JSON.stringify(subscriptions, null, 2));
-}
-
-// Storage for notify log (to prevent duplicate reminders)
-const notifyLogPath = path.join(__dirname, "notifyLog.json");
-let notifyLog = {};
-if (fs.existsSync(notifyLogPath)) {
-  notifyLog = JSON.parse(fs.readFileSync(notifyLogPath, "utf-8"));
-}
-
-function saveNotifyLog() {
-  fs.writeFileSync(notifyLogPath, JSON.stringify(notifyLog, null, 2));
-}
-
-// Storage for serviced log (machines marked as serviced for a date)
-const servicedLogPath = path.join(__dirname, "servicedLog.json");
-let servicedLog = {};
-if (fs.existsSync(servicedLogPath)) {
-  servicedLog = JSON.parse(fs.readFileSync(servicedLogPath, "utf-8"));
-}
-
-function saveServicedLog() {
-  fs.writeFileSync(servicedLogPath, JSON.stringify(servicedLog, null, 2));
-}
-
-const MIME_TYPES = {
-  ".html": "text/html",
-  ".css": "text/css",
-  ".js": "text/javascript",
-  ".json": "application/json",
-};
-
-// Date helper logic for reminders (ported from frontend)
-const PACKAGE_INTERVAL_MONTHS = {
-  monthly: 1,
-  quarterly: 1,
-  halfyearly: 1,
-  yearly: 1, // Matching the user's updated values
-};
+// ─── Date helpers ─────────────────────────────────────────────────────────────
+// All machines use a fixed 1-month service interval regardless of package label.
+const SERVICE_INTERVAL_MONTHS = 1;
 
 function parseISODate(iso) {
-  var parts = iso.split("-");
-  return new Date(
-    parseInt(parts[0], 10),
-    parseInt(parts[1], 10) - 1,
-    parseInt(parts[2], 10),
-  );
+  const [y, m, d] = iso.split("-");
+  return new Date(parseInt(y), parseInt(m) - 1, parseInt(d));
 }
 function toISODate(d) {
-  var y = d.getFullYear();
-  var m = String(d.getMonth() + 1).padStart(2, "0");
-  var day = String(d.getDate()).padStart(2, "0");
-  return y + "-" + m + "-" + day;
+  return (
+    d.getFullYear() +
+    "-" +
+    String(d.getMonth() + 1).padStart(2, "0") +
+    "-" +
+    String(d.getDate()).padStart(2, "0")
+  );
 }
-function daysInMonth(year, monthIndex) {
-  return new Date(year, monthIndex + 1, 0).getDate();
-}
-function addMonthsClamped(date, months) {
-  var day = date.getDate();
-  var d = new Date(date.getFullYear(), date.getMonth(), 1);
+function addMonthsClamped(date, months, originalDay) {
+  const day = originalDay !== undefined ? originalDay : date.getDate();
+  const d = new Date(date.getFullYear(), date.getMonth(), 1);
   d.setMonth(d.getMonth() + months);
-  var maxDay = daysInMonth(d.getFullYear(), d.getMonth());
+  const maxDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
   d.setDate(Math.min(day, maxDay));
   return d;
 }
@@ -113,355 +150,363 @@ function sameDate(a, b) {
     a.getDate() === b.getDate()
   );
 }
-function nextReminderDate(record, from) {
-  var install = parseISODate(record.installDate);
-  var interval = PACKAGE_INTERVAL_MONTHS[record.package] || 1;
-  var candidate = addMonthsClamped(install, interval);
-  var guard = 0;
+
+/**
+ * Returns the next service date for a machine.
+ * Always uses SERVICE_INTERVAL_MONTHS (1) regardless of package.
+ */
+function nextServiceDate(installDate, from) {
+  const install = parseISODate(installDate);
+  const originalDay = install.getDate();
+  let candidate = addMonthsClamped(
+    install,
+    SERVICE_INTERVAL_MONTHS,
+    originalDay,
+  );
+  let guard = 0;
   while (candidate < from && guard < 1200) {
-    candidate = addMonthsClamped(candidate, interval);
+    candidate = addMonthsClamped(
+      candidate,
+      SERVICE_INTERVAL_MONTHS,
+      originalDay,
+    );
     guard++;
   }
   return candidate;
 }
+
 function todayMidnight() {
-  var d = new Date();
+  const d = new Date();
   d.setHours(0, 0, 0, 0);
   return d;
 }
 
-// Background Task: Check Reminders
-setInterval(() => {
-  const dbPath = path.join(__dirname, "database.json");
-  if (!fs.existsSync(dbPath)) return;
+// ─── Background: send push every 30 min for unserviced due machines ───────────
+const REMINDER_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 
-  let records = [];
+async function checkAndNotify() {
   try {
-    records = JSON.parse(fs.readFileSync(dbPath, "utf-8"));
-  } catch (e) {
-    return;
-  }
+    const { rows: machines } = await pool.query("SELECT * FROM machines");
+    if (machines.length === 0) return;
 
-  const today = todayMidnight();
-  const todayISO = toISODate(today);
+    const { rows: subs } = await pool.query("SELECT data FROM subscriptions");
+    if (subs.length === 0) return;
 
-  let fired = 0;
+    const today = todayMidnight();
+    const todayISO = toISODate(today);
 
-  records.forEach((r) => {
-    const next = nextReminderDate(r, today);
-    const due = sameDate(next, today);
-    if (!due) return;
+    // Build serviced-today map
+    const { rows: slRows } = await pool.query(
+      "SELECT machine_id, serviced_date FROM serviced_log",
+    );
+    const servicedToday = new Set(
+      slRows
+        .filter((r) => r.serviced_date === todayISO)
+        .map((r) => r.machine_id),
+    );
 
-    // Skip if already notified today
-    if (notifyLog[r.id] === todayISO) return;
+    for (const machine of machines) {
+      const next = nextServiceDate(machine.install_date, today);
+      if (!sameDate(next, today)) continue; // not due today
+      if (servicedToday.has(machine.id)) continue; // already serviced
 
-    // Skip if already marked as serviced for today
-    if (servicedLog[r.id] === todayISO) return;
+      // Use a tag that changes every 30-minute window so the browser shows
+      // a new notification each interval instead of silently replacing it.
+      const intervalBucket = Math.floor(Date.now() / REMINDER_INTERVAL_MS);
+      const payload = JSON.stringify({
+        title: "Machine service due today",
+        body: `${machine.client_name} — ${machine.machine_code} (${machine.model})\n${machine.location}, ${machine.city}`,
+        // Unique per machine per 30-min window → always shown as a new alert
+        tag: `machine-reminder-${machine.id}-${intervalBucket}`,
+        // machineId in data so the service worker can read it without tag-parsing
+        machineId: machine.id,
+      });
 
-    if (subscriptions.length === 0) return;
-
-    // Send push to all subscriptions
-    const payload = JSON.stringify({
-      title: "Machine service due today",
-      body: `${r.clientName} — ${r.machineCode} (${r.model})\n${r.location}, ${r.city}`,
-      tag: `machine-reminder-${r.id}-${todayISO}`,
-    });
-
-    const activeSubscriptions = [];
-    let removals = 0;
-
-    // To ensure notifyLog is only set if we at least TRIED to send to a valid subscription
-    let sentCount = 0;
-
-    Promise.all(
-      subscriptions.map((sub) => {
-        sentCount++;
-        return webpush
-          .sendNotification(sub, payload)
-          .then(() => {
-            activeSubscriptions.push(sub);
-          })
-          .catch((err) => {
+      const expiredEndpoints = [];
+      await Promise.all(
+        subs.map(({ data }) =>
+          webpush.sendNotification(data, payload).catch((err) => {
             if (err.statusCode === 410 || err.statusCode === 404) {
-              removals++; // Subscription expired
-            } else {
-              activeSubscriptions.push(sub);
+              expiredEndpoints.push(data.endpoint);
             }
-          });
+          }),
+        ),
+      );
+
+      for (const ep of expiredEndpoints) {
+        await pool.query("DELETE FROM subscriptions WHERE endpoint = $1", [ep]);
+      }
+    }
+  } catch (err) {
+    console.error("Reminder check error:", err.message);
+  }
+}
+
+// ─── Express middleware ───────────────────────────────────────────────────────
+app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
+
+function setupSession() {
+  app.use(
+    session({
+      store: new pgSession({
+        pool,
+        tableName: "session",
+        createTableIfMissing: false,
       }),
-    ).then(() => {
-      if (removals > 0) {
-        subscriptions = activeSubscriptions;
-        saveSubscriptions();
-      }
-      if (sentCount > 0) {
-        notifyLog[r.id] = todayISO;
-        saveNotifyLog();
-      }
-    });
-  });
-}, REMINDER_TIME); // Check every minute
-
-const server = http.createServer((req, res) => {
-  const parseCookies = (cookieHeader) => {
-    const list = {};
-    if (!cookieHeader) return list;
-    cookieHeader.split(";").forEach((cookie) => {
-      let [name, ...rest] = cookie.split("=");
-      name = name?.trim();
-      if (!name) return;
-      const value = rest.join("=").trim();
-      if (!value) return;
-      list[name] = decodeURIComponent(value);
-    });
-    return list;
-  };
-
-  const cookies = parseCookies(req.headers.cookie);
-  const sessionId = cookies.sessionId;
-  const isAuthenticated = sessionId && sessions[sessionId];
-
-  const protectedRoutes = [
-    "/subscribe",
-    "/markServiced",
-    "/unmarkServiced",
-    "/database.json",
-  ];
-
-  // Service-worker-initiated mark serviced (no session cookie available in SW context)
-  if (req.method === "POST" && req.url === "/sw-markServiced") {
-    let body = "";
-    req.on("data", (chunk) => {
-      body += chunk.toString();
-    });
-    req.on("end", () => {
-      try {
-        const { id } = JSON.parse(body);
-        if (!id) throw new Error("Missing id");
-        // Validate id exists in database before accepting
-        const dbPath = path.join(__dirname, "database.json");
-        let records = [];
-        if (fs.existsSync(dbPath)) {
-          try {
-            records = JSON.parse(fs.readFileSync(dbPath, "utf-8"));
-          } catch (e) {}
-        }
-        const exists = records.some((r) => r.id === id);
-        if (!exists) {
-          res.writeHead(404, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Machine not found" }));
-          return;
-        }
-        const todayISO = toISODate(todayMidnight());
-        servicedLog[id] = todayISO;
-        saveServicedLog();
-        res.writeHead(200, {
-          "Content-Type": "application/json",
-          "Access-Control-Allow-Origin": "*",
-        });
-        res.end(JSON.stringify({ success: true, id, date: todayISO }));
-      } catch (err) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Invalid request" }));
-      }
-    });
-    return;
-  }
-  const isProtectedRoute = protectedRoutes.some((route) =>
-    req.url.startsWith(route),
+      secret:
+        process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex"),
+      resave: false,
+      saveUninitialized: false,
+      cookie: {
+        httpOnly: true,
+        maxAge: 24 * 60 * 60 * 1000, // 24 h
+        secure: process.env.NODE_ENV === "production",
+      },
+    }),
   );
+}
 
-  if (req.method === "POST" && req.url === "/api/login") {
-    let body = "";
-    req.on("data", (chunk) => (body += chunk.toString()));
-    req.on("end", () => {
-      try {
-        const { username, password } = JSON.parse(body);
-        const user = users.find(
-          (u) => u.username === username && u.password === password,
-        );
-        if (user) {
-          const sid = crypto.randomBytes(16).toString("hex");
-          sessions[sid] = user.username;
-          res.writeHead(200, {
-            "Content-Type": "application/json",
-            "Set-Cookie": `sessionId=${sid}; HttpOnly; Path=/; Max-Age=86400`,
-          });
-          res.end(JSON.stringify({ success: true }));
-        } else {
-          res.writeHead(401, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Invalid credentials" }));
-        }
-      } catch (err) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Invalid request" }));
-      }
-    });
-    return;
+function requireAuth(req, res, next) {
+  if (req.session?.user) return next();
+  return res.status(401).json({ error: "Unauthorized" });
+}
+
+// ─── Routes ───────────────────────────────────────────────────────────────────
+
+app.post("/api/login", async (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password)
+    return res.status(400).json({ error: "Missing credentials" });
+  try {
+    const { rows } = await pool.query(
+      "SELECT * FROM users WHERE username = $1 AND password = $2",
+      [username, password],
+    );
+    if (rows.length === 0)
+      return res.status(401).json({ error: "Invalid credentials" });
+    req.session.user = rows[0].username;
+    return res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
   }
+});
 
-  if (req.method === "POST" && req.url === "/api/logout") {
-    if (sessionId) {
-      delete sessions[sessionId];
-    }
-    res.writeHead(200, {
-      "Content-Type": "application/json",
-      "Set-Cookie": `sessionId=; HttpOnly; Path=/; Max-Age=0`,
-    });
-    res.end(JSON.stringify({ success: true }));
-    return;
-  }
-
-  const currentReqPath = req.url.split("?")[0];
-  if (!isAuthenticated) {
-    if (isProtectedRoute) {
-      res.writeHead(401, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Unauthorized" }));
-      return;
-    }
-    if (currentReqPath === "/" || currentReqPath === "/index.html") {
-      res.writeHead(302, { Location: "/login.html" });
-      res.end();
-      return;
-    }
-  }
-
-  if (req.method === "GET" && req.url === "/vapidPublicKey") {
-    res.writeHead(200, { "Content-Type": "text/plain" });
-    res.end(vapidKeys.publicKey);
-    return;
-  }
-
-  if (req.method === "POST" && req.url === "/subscribe") {
-    let body = "";
-    req.on("data", (chunk) => {
-      body += chunk.toString();
-    });
-    req.on("end", () => {
-      try {
-        const subscription = JSON.parse(body);
-        const existing = subscriptions.find(
-          (s) => s.endpoint === subscription.endpoint,
-        );
-        if (!existing) {
-          subscriptions.push(subscription);
-          saveSubscriptions();
-        }
-        res.writeHead(201, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ success: true }));
-      } catch (err) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Invalid JSON" }));
-      }
-    });
-    return;
-  }
-
-  // Return the serviced log so the frontend knows which machines are serviced today
-  if (req.method === "GET" && req.url === "/servicedLog") {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(servicedLog));
-    return;
-  }
-
-  // Mark a machine as serviced for today (stops further notifications)
-  if (req.method === "POST" && req.url === "/markServiced") {
-    let body = "";
-    req.on("data", (chunk) => {
-      body += chunk.toString();
-    });
-    req.on("end", () => {
-      try {
-        const { id } = JSON.parse(body);
-        if (!id) throw new Error("Missing id");
-        const todayISO = toISODate(todayMidnight());
-        servicedLog[id] = todayISO;
-        saveServicedLog();
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ success: true, id, date: todayISO }));
-      } catch (err) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Invalid request" }));
-      }
-    });
-    return;
-  }
-
-  // Unmark a machine as serviced (resumes notifications)
-  if (req.method === "POST" && req.url === "/unmarkServiced") {
-    let body = "";
-    req.on("data", (chunk) => {
-      body += chunk.toString();
-    });
-    req.on("end", () => {
-      try {
-        const { id } = JSON.parse(body);
-        if (!id) throw new Error("Missing id");
-        delete servicedLog[id];
-        delete notifyLog[id];
-        saveServicedLog();
-        saveNotifyLog();
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ success: true, id }));
-      } catch (err) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Invalid request" }));
-      }
-    });
-    return;
-  }
-
-  if (req.method === "POST" && req.url === "/database.json") {
-    let body = "";
-    req.on("data", (chunk) => {
-      body += chunk.toString();
-    });
-    req.on("end", () => {
-      try {
-        JSON.parse(body); // Validate JSON
-        fs.writeFileSync(path.join(__dirname, "database.json"), body);
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ success: true }));
-      } catch (err) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Invalid JSON" }));
-      }
-    });
-    return;
-  }
-
-  // Basic static file server
-  let reqPath = req.url.split("?")[0]; // Remove query params
-  let filePath = path.join(__dirname, reqPath === "/" ? "index.html" : reqPath);
-
-  if (!filePath.startsWith(__dirname)) {
-    res.writeHead(403);
-    res.end("Forbidden");
-    return;
-  }
-
-  let extname = path.extname(filePath);
-  let contentType = MIME_TYPES[extname] || "application/octet-stream";
-
-  fs.readFile(filePath, (err, content) => {
-    if (err) {
-      if (err.code === "ENOENT") {
-        res.writeHead(404);
-        res.end("File not found");
-      } else {
-        res.writeHead(500);
-        res.end("Server error: " + err.code);
-      }
-    } else {
-      res.writeHead(200, { "Content-Type": contentType });
-      res.end(content, "utf-8");
-    }
+app.post("/api/logout", (req, res) => {
+  req.session.destroy(() => {
+    res.clearCookie("connect.sid");
+    res.json({ success: true });
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}/`);
-  console.log(
-    `Web push enabled. Reminders checked automatically every minute.`,
-  );
+app.get("/vapidPublicKey", (req, res) => {
+  res.type("text/plain").send(vapidPublicKey);
 });
+
+app.post("/subscribe", requireAuth, async (req, res) => {
+  const subscription = req.body;
+  if (!subscription?.endpoint)
+    return res.status(400).json({ error: "Invalid subscription" });
+  try {
+    await pool.query(
+      `INSERT INTO subscriptions (endpoint, data) VALUES ($1, $2)
+       ON CONFLICT (endpoint) DO NOTHING`,
+      [subscription.endpoint, JSON.stringify(subscription)],
+    );
+    return res.status(201).json({ success: true });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Serviced log — public so the frontend can read it on load
+app.get("/servicedLog", async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      "SELECT machine_id, serviced_date FROM serviced_log",
+    );
+    const log = {};
+    rows.forEach((r) => (log[r.machine_id] = r.serviced_date));
+    return res.json(log);
+  } catch (err) {
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+app.post("/markServiced", requireAuth, async (req, res) => {
+  const { id } = req.body;
+  if (!id) return res.status(400).json({ error: "Missing id" });
+  try {
+    const { rowCount } = await pool.query(
+      "SELECT 1 FROM machines WHERE id = $1",
+      [id],
+    );
+    if (rowCount === 0)
+      return res.status(404).json({ error: "Machine not found" });
+    const todayISO = toISODate(todayMidnight());
+    await pool.query(
+      `INSERT INTO serviced_log (machine_id, serviced_date) VALUES ($1, $2)
+       ON CONFLICT (machine_id) DO UPDATE SET serviced_date = EXCLUDED.serviced_date`,
+      [id, todayISO],
+    );
+    return res.json({ success: true, id, date: todayISO });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+app.post("/unmarkServiced", requireAuth, async (req, res) => {
+  const { id } = req.body;
+  if (!id) return res.status(400).json({ error: "Missing id" });
+  try {
+    await pool.query("DELETE FROM serviced_log WHERE machine_id = $1", [id]);
+    return res.json({ success: true, id });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Called from service worker (no session cookie available in SW context)
+app.post("/sw-markServiced", async (req, res) => {
+  const { id } = req.body;
+  if (!id) return res.status(400).json({ error: "Missing id" });
+  try {
+    const { rowCount } = await pool.query(
+      "SELECT 1 FROM machines WHERE id = $1",
+      [id],
+    );
+    if (rowCount === 0)
+      return res.status(404).json({ error: "Machine not found" });
+    const todayISO = toISODate(todayMidnight());
+    await pool.query(
+      `INSERT INTO serviced_log (machine_id, serviced_date) VALUES ($1, $2)
+       ON CONFLICT (machine_id) DO UPDATE SET serviced_date = EXCLUDED.serviced_date`,
+      [id, todayISO],
+    );
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    return res.json({ success: true, id, date: todayISO });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+// GET /database.json — all machine records
+app.get("/database.json", requireAuth, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      "SELECT * FROM machines ORDER BY sno ASC",
+    );
+    const records = rows.map((r) => ({
+      id: r.id,
+      sno: r.sno,
+      machineCode: r.machine_code,
+      model: r.model,
+      clientName: r.client_name,
+      location: r.location,
+      city: r.city,
+      installDate: r.install_date,
+      package: r.package,
+    }));
+    return res.json(records);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+// POST /database.json — full sync of machine records
+app.post("/database.json", requireAuth, async (req, res) => {
+  const records = req.body;
+  if (!Array.isArray(records))
+    return res.status(400).json({ error: "Expected JSON array" });
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const { rows: existing } = await client.query("SELECT id FROM machines");
+    const existingIds = new Set(existing.map((r) => r.id));
+    const incomingIds = new Set(records.map((r) => r.id));
+
+    for (const id of existingIds) {
+      if (!incomingIds.has(id)) {
+        await client.query("DELETE FROM machines WHERE id = $1", [id]);
+      }
+    }
+
+    for (const r of records) {
+      await client.query(
+        `INSERT INTO machines
+           (id, sno, machine_code, model, client_name, location, city, install_date, package)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+         ON CONFLICT (id) DO UPDATE SET
+           sno          = EXCLUDED.sno,
+           machine_code = EXCLUDED.machine_code,
+           model        = EXCLUDED.model,
+           client_name  = EXCLUDED.client_name,
+           location     = EXCLUDED.location,
+           city         = EXCLUDED.city,
+           install_date = EXCLUDED.install_date,
+           package      = EXCLUDED.package`,
+        [
+          r.id,
+          r.sno,
+          r.machineCode,
+          r.model,
+          r.clientName,
+          r.location,
+          r.city,
+          r.installDate,
+          r.package,
+        ],
+      );
+    }
+
+    await client.query("COMMIT");
+    return res.json({ success: true });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  } finally {
+    client.release();
+  }
+});
+
+// ─── Static files from public/ ────────────────────────────────────────────────
+app.use(express.static(PUBLIC_DIR, { index: false }));
+
+app.get(["/", "/index.html"], (req, res) => {
+  if (!req.session?.user) return res.redirect("/login.html");
+  res.sendFile(path.join(PUBLIC_DIR, "index.html"));
+});
+
+app.use((_req, res) => res.status(404).send("Not found"));
+
+// ─── Start ────────────────────────────────────────────────────────────────────
+async function start() {
+  try {
+    await initDB();
+    await initVapid();
+    setupSession();
+    // Fire immediately on startup, then every 30 minutes
+    checkAndNotify();
+    setInterval(checkAndNotify, REMINDER_INTERVAL_MS);
+    app.listen(PORT, () => {
+      console.log(`Server running at http://localhost:${PORT}/`);
+      console.log(
+        `Reminders fire every 30 minutes for unserviced due machines.`,
+      );
+    });
+  } catch (err) {
+    console.error("Failed to start:", err);
+    process.exit(1);
+  }
+}
+
+start();
