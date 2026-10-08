@@ -182,7 +182,7 @@ function todayMidnight() {
 }
 
 // ─── Background: send push every 30 min for unserviced due machines ───────────
-const REMINDER_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+const REMINDER_INTERVAL_MS = 1000; // 30 minutes
 
 async function checkAndNotify() {
   try {
