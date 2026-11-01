@@ -400,7 +400,7 @@ app.post("/sw-markServiced", async (req, res) => {
 app.get("/database.json", requireAuth, async (req, res) => {
   try {
     const { rows } = await pool.query(
-      "SELECT * FROM machines ORDER BY sno ASC",
+      "SELECT * FROM machines ORDER BY installDate ASC",
     );
     const records = rows.map((r) => ({
       id: r.id,
